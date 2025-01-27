@@ -54,13 +54,13 @@ __tests__ = (
     "tags"            : list,
     "tags_character"  : ["hatsune_miku"],
     "tags_copyright"  : ["vocaloid"],
-    "tags_general": [
+    "tags_general"    : [
+        "female",
+        "green_eyes",
         "twintails",
         "green_hair",
-        "flag",
         "gloves",
-        "green_eyes",
-        "female",
+        "flag",
         "racing_miku",
     ],
     "title"           : "Racing Miku 2022 Ver.",
@@ -78,4 +78,28 @@ __tests__ = (
     "#urls"    : "https://itaku.ee/api/media/gallery_vids/sleepy_af_OY5GHWw.mp4",
 },
 
+{
+    "#url"     : "https://itaku.ee/home/images?tags=cute",
+    "#comment" : "simple search",
+    "#category": ("", "itaku", "search"),
+    "#class"   : itaku.ItakuSearchExtractor,
+    "#range"   : "1-10",
+    "#count"   : 10,
+},
+
+{
+    "#url"     : "https://itaku.ee/home/images?maturity_rating=SFW&date_range=&ordering=-date_added&text=hello&is_video=true",
+    "#comment" : "search for videos",
+    "#category": ("", "itaku", "search"),
+    "#class"   : itaku.ItakuSearchExtractor,
+    "#count"   : range(5, 50),
+},
+
+{
+    "#url"     : "https://itaku.ee/home/images?tags=%2Bcute&tags=-cute&tags=~cute&maturity_rating=SFW&date_range=&ordering=-date_added",
+    "#comment" : "search with postive, negative, and optional tags",
+    "#category": ("", "itaku", "search"),
+    "#class"   : itaku.ItakuSearchExtractor,
+    "#count"   : 0,
+},
 )

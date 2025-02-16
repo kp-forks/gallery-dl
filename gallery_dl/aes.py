@@ -14,6 +14,13 @@ except ImportError:
         from Crypto.Cipher import AES as Cryptodome_AES
     except ImportError:
         Cryptodome_AES = None
+except Exception as exc:
+    Cryptodome_AES = None
+    import logging
+    logging.getLogger("aes").warning(
+        "Error when trying to import 'Cryptodome' module (%s: %s)",
+        exc.__class__.__name__, exc)
+    del logging
 
 
 if Cryptodome_AES:
@@ -227,11 +234,12 @@ def aes_gcm_decrypt_and_verify(data, key, tag, nonce):
     decrypted_data = aes_ctr_decrypt(
         data, key, iv_ctr + [0] * (BLOCK_SIZE_BYTES - len(iv_ctr)))
 
-    pad_len = len(data) // 16 * 16
+    pad_len = (
+        (BLOCK_SIZE_BYTES - (len(data) % BLOCK_SIZE_BYTES)) % BLOCK_SIZE_BYTES)
     s_tag = ghash(
         hash_subkey,
         data +
-        [0] * (BLOCK_SIZE_BYTES - len(data) + pad_len) +  # pad
+        [0] * pad_len +                           # pad
         bytes_to_intlist(
             (0 * 8).to_bytes(8, "big") +          # length of associated data
             ((len(data) * 8).to_bytes(8, "big"))  # length of data

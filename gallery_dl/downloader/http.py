@@ -12,7 +12,7 @@ import time
 import mimetypes
 from requests.exceptions import RequestException, ConnectionError, Timeout
 from .common import DownloaderBase
-from .. import text, util
+from .. import text, util, output
 from ssl import SSLError
 
 
@@ -38,6 +38,7 @@ class HttpDownloader(DownloaderBase):
         self.verify = self.config("verify", extractor._verify)
         self.mtime = self.config("mtime", True)
         self.rate = self.config("rate")
+        interval_429 = self.config("sleep-429")
 
         if not self.config("consume-content", False):
             # this resets the underlying TCP connection, and therefore
@@ -79,12 +80,16 @@ class HttpDownloader(DownloaderBase):
             self.receive = self._receive_rate
             if self.progress < 0.0:
                 self.progress = 0.0
+        if interval_429 is None:
+            self.interval_429 = extractor._interval_429
+        else:
+            self.interval_429 = util.build_duration_func(interval_429)
 
     def download(self, url, pathfmt):
         try:
             return self._download_impl(url, pathfmt)
         except Exception:
-            print()
+            output.stderr_write("\n")
             raise
         finally:
             # remove file from incomplete downloads
@@ -93,11 +98,13 @@ class HttpDownloader(DownloaderBase):
 
     def _download_impl(self, url, pathfmt):
         response = None
-        tries = 0
+        tries = code = 0
         msg = ""
 
         metadata = self.metadata
         kwdict = pathfmt.kwdict
+        expected_status = kwdict.get(
+            "_http_expected_status", ())
         adjust_extension = kwdict.get(
             "_http_adjust_extension", self.adjust_extension)
 
@@ -109,10 +116,17 @@ class HttpDownloader(DownloaderBase):
                 if response:
                     self.release_conn(response)
                     response = None
+
                 self.log.warning("%s (%s/%s)", msg, tries, self.retries+1)
                 if tries > self.retries:
                     return False
-                time.sleep(tries)
+
+                if code == 429 and self.interval_429:
+                    s = self.interval_429()
+                    time.sleep(s if s > tries else tries)
+                else:
+                    time.sleep(tries)
+                code = 0
 
             tries += 1
             file_header = None
@@ -142,7 +156,16 @@ class HttpDownloader(DownloaderBase):
                     proxies=self.proxies,
                     verify=self.verify,
                 )
-            except (ConnectionError, Timeout) as exc:
+            except ConnectionError as exc:
+                try:
+                    reason = exc.args[0].reason
+                    cls = reason.__class__.__name__
+                    pre, _, err = str(reason.args[-1]).partition(":")
+                    msg = "{}: {}".format(cls, (err or pre).lstrip())
+                except Exception:
+                    msg = str(exc)
+                continue
+            except Timeout as exc:
                 msg = str(exc)
                 continue
             except Exception as exc:
@@ -151,7 +174,7 @@ class HttpDownloader(DownloaderBase):
 
             # check response
             code = response.status_code
-            if code == 200:  # OK
+            if code == 200 or code in expected_status:  # OK
                 offset = 0
                 size = response.headers.get("Content-Length")
             elif code == 206:  # Partial Content
@@ -246,7 +269,7 @@ class HttpDownloader(DownloaderBase):
                         else response.iter_content(16), b"")
                 except (RequestException, SSLError) as exc:
                     msg = str(exc)
-                    print()
+                    output.stderr_write("\n")
                     continue
                 if self._adjust_extension(pathfmt, file_header) and \
                         pathfmt.exists():
@@ -280,14 +303,14 @@ class HttpDownloader(DownloaderBase):
                     self.receive(fp, content, size, offset)
                 except (RequestException, SSLError) as exc:
                     msg = str(exc)
-                    print()
+                    output.stderr_write("\n")
                     continue
 
                 # check file size
                 if size and fp.tell() < size:
                     msg = "file size mismatch ({} < {})".format(
                         fp.tell(), size)
-                    print()
+                    output.stderr_write("\n")
                     continue
 
             break
@@ -306,7 +329,7 @@ class HttpDownloader(DownloaderBase):
             for _ in response.iter_content(self.chunk_size):
                 pass
         except (RequestException, SSLError) as exc:
-            print()
+            output.stderr_write("\n")
             self.log.debug(
                 "Unable to consume response body (%s: %s); "
                 "closing the connection anyway", exc.__class__.__name__, exc)
@@ -399,6 +422,9 @@ MIME_TYPES = {
     "video/webm": "webm",
     "video/ogg" : "ogg",
     "video/mp4" : "mp4",
+    "video/m4v" : "m4v",
+    "video/x-m4v": "m4v",
+    "video/quicktime": "mov",
 
     "audio/wav"  : "wav",
     "audio/x-wav": "wav",
@@ -440,7 +466,9 @@ SIGNATURE_CHECKS = {
     "cur" : lambda s: s[0:4] == b"\x00\x00\x02\x00",
     "psd" : lambda s: s[0:4] == b"8BPS",
     "mp4" : lambda s: (s[4:8] == b"ftyp" and s[8:11] in (
-                       b"mp4", b"avc", b"iso", b"M4V")),
+                       b"mp4", b"avc", b"iso")),
+    "m4v" : lambda s: s[4:11] == b"ftypM4V",
+    "mov" : lambda s: s[4:12] == b"ftypqt  ",
     "webm": lambda s: s[0:4] == b"\x1A\x45\xDF\xA3",
     "ogg" : lambda s: s[0:4] == b"OggS",
     "wav" : lambda s: (s[0:4] == b"RIFF" and

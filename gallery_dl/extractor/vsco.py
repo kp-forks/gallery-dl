@@ -38,7 +38,7 @@ class VscoExtractor(Extractor):
             if img["is_video"]:
                 if not videos:
                     continue
-                url = "https://" + img["video_url"]
+                url = text.ensure_http_scheme(img["video_url"])
             else:
                 base = img["responsive_url"].partition("/")[2]
                 cdn, _, path = base.partition("/")
@@ -46,6 +46,8 @@ class VscoExtractor(Extractor):
                     url = "https://image-{}.vsco.co/{}".format(cdn, path)
                 elif cdn.isdecimal():
                     url = "https://image.vsco.co/" + base
+                elif img["responsive_url"].startswith("http"):
+                    url = img["responsive_url"]
                 else:
                     url = "https://" + img["responsive_url"]
 
@@ -61,6 +63,10 @@ class VscoExtractor(Extractor):
                 "height": img["height"],
                 "description": img.get("description") or "",
             })
+            if data["extension"] == "m3u8":
+                url = "ytdl:" + url
+                data["_ytdl_manifest"] = "hls"
+                data["extension"] = "mp4"
             yield Message.Url, url, data
 
     def images(self):
@@ -68,7 +74,8 @@ class VscoExtractor(Extractor):
 
     def _extract_preload_state(self, url):
         page = self.request(url, notfound=self.subcategory).text
-        return util.json_loads(text.extr(page, "__PRELOADED_STATE__ = ", "<"))
+        return util.json_loads(text.extr(page, "__PRELOADED_STATE__ = ", "<")
+                               .replace('"prevPageToken":undefined,', ''))
 
     def _pagination(self, url, params, token, key, extra=None):
         headers = {
@@ -113,9 +120,28 @@ class VscoExtractor(Extractor):
 
 
 class VscoUserExtractor(VscoExtractor):
-    """Extractor for images from a user on vsco.co"""
+    """Extractor for a vsco user profile"""
     subcategory = "user"
-    pattern = USER_PATTERN + r"(?:/gallery|/images(?:/\d+)?)?/?(?:$|[?#])"
+    pattern = USER_PATTERN + r"/?$"
+    example = "https://vsco.co/USER"
+
+    def initialize(self):
+        pass
+
+    def items(self):
+        base = "{}/{}/".format(self.root, self.user)
+        return self._dispatch_extractors((
+            (VscoAvatarExtractor    , base + "avatar"),
+            (VscoGalleryExtractor   , base + "gallery"),
+            (VscoSpacesExtractor    , base + "spaces"),
+            (VscoCollectionExtractor, base + "collection"),
+        ), ("gallery",))
+
+
+class VscoGalleryExtractor(VscoExtractor):
+    """Extractor for a vsco user's gallery"""
+    subcategory = "gallery"
+    pattern = USER_PATTERN + r"/(?:gallery|images)"
     example = "https://vsco.co/USER/gallery"
 
     def images(self):
@@ -238,18 +264,67 @@ class VscoSpacesExtractor(VscoExtractor):
             yield Message.Queue, url, space
 
 
+class VscoAvatarExtractor(VscoExtractor):
+    """Extractor for vsco.co user avatars"""
+    subcategory = "avatar"
+    pattern = USER_PATTERN + r"/avatar"
+    example = "https://vsco.co/USER/avatar"
+
+    def images(self):
+        url = "{}/{}/gallery".format(self.root, self.user)
+        page = self.request(url).text
+        piid = text.extr(page, '"profileImageId":"', '"')
+
+        url = "https://im.vsco.co/" + piid
+        # needs GET request, since HEAD does not redirect to full URL
+        response = self.request(url, allow_redirects=False)
+
+        return ({
+            "_id"           : piid,
+            "is_video"      : False,
+            "grid_name"     : "",
+            "upload_date"   : 0,
+            "responsive_url": response.headers["Location"],
+            "video_url"     : "",
+            "image_meta"    : None,
+            "width"         : 0,
+            "height"        : 0,
+        },)
+
+
 class VscoImageExtractor(VscoExtractor):
     """Extractor for individual images on vsco.co"""
     subcategory = "image"
     pattern = USER_PATTERN + r"/media/([0-9a-fA-F]+)"
     example = "https://vsco.co/USER/media/0123456789abcdef"
 
-    def __init__(self, match):
-        VscoExtractor.__init__(self, match)
-        self.media_id = match.group(2)
-
     def images(self):
-        url = "{}/{}/media/{}".format(self.root, self.user, self.media_id)
+        url = "{}/{}/media/{}".format(self.root, self.user, self.groups[1])
         data = self._extract_preload_state(url)
         media = data["medias"]["byId"].popitem()[1]["media"]
         return (self._transform_media(media),)
+
+
+class VscoVideoExtractor(VscoExtractor):
+    """Extractor for vsco.co videos links"""
+    subcategory = "video"
+    pattern = USER_PATTERN + r"/video/([^/?#]+)"
+    example = "https://vsco.co/USER/video/012345678-9abc-def0"
+
+    def images(self):
+        url = "{}/{}/video/{}".format(self.root, self.user, self.groups[1])
+        data = self._extract_preload_state(url)
+        media = data["medias"]["byId"].popitem()[1]["media"]
+
+        return ({
+            "_id"           : media["id"],
+            "is_video"      : True,
+            "grid_name"     : "",
+            "upload_date"   : media["createdDate"],
+            "responsive_url": media["posterUrl"],
+            "video_url"     : "ytdl:" + media.get("playbackUrl"),
+            "image_meta"    : None,
+            "width"         : media["width"],
+            "height"        : media["height"],
+            "description"   : media["description"],
+        },)
